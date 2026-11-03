@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Етап 1: встановлення залежностей і компіляція TypeScript
-FROM node:24-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -9,7 +9,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # Етап 2: робочий образ лише з потрібним для запуску
-FROM node:24-alpine
+FROM node:26-alpine
 ARG APP_VERSION=dev
 ARG GIT_SHA=local
 ARG BUILD_TIME=-
