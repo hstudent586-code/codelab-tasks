@@ -1,0 +1,229 @@
+# Безперервна інтеграція і доставка: перевірка коду, тести, образ, сканування, розгортання в тестове середовище.
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# На гілках новий запуск скасовує старий; на main запуски йдуть по черзі, щоб не перервати розгортання.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  lint:
+    name: Статичний аналіз
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: ESLint і перевірка типів TypeScript
+        run: npm run lint
+      - name: Вразливості в залежностях (робочих)
+        run: npm audit --omit=dev --audit-level=high
+
+  test:
+    name: Тести
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: codelab_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d codelab_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://ci:ci@localhost:5432/codelab_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Модульні та інтеграційні тести з покриттям
+        run: npm run coverage
+      - name: Підсумок покриття
+        if: always()
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  build:
+    name: Образ і сканування
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Версія і назва образу
+        id: ver
+        run: |
+          {
+            echo "version=$(node -p 'require("./package.json").version').${{ github.run_number }}"
+            echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "name=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Збирання образу для сканування
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: codelab-tasks:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Звіт Trivy (критичні і високі вразливості)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: codelab-tasks:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+      - name: Бар'єр безпеки – зупинка при критичних вразливостях
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: codelab-tasks:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          skip-setup-trivy: true
+      - name: Вхід у GitHub Container Registry
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Мітки образу
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.ver.outputs.name }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=${{ steps.ver.outputs.version }}
+            type=raw,value=main,enable={{is_default_branch}}
+      - name: Збирання і публікація (amd64 + arm64)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.ver.outputs.time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Посилання на образ
+        id: ref
+        run: |
+          echo "image=${{ steps.ver.outputs.name }}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "Образ \`${{ steps.ver.outputs.name }}:sha-${GITHUB_SHA::7}\`, версія ${{ steps.ver.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:
+    name: Розгортання в staging
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, codelab]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: staging
+      url: http://localhost:8281
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Розгортання з перевіркою і відкатом
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: bash scripts/deploy.sh staging "${{ needs.build.outputs.image }}" "${{ github.sha }}"
+      - name: Підсумок
+        run: |
+          {
+            echo "### Staging оновлено"
+            echo "- образ: \`${{ needs.build.outputs.image }}\`"
+            echo "- версія: ${{ needs.build.outputs.version }}"
+            echo "- адреса: http://localhost:8281"
+            echo "- далі: розгортання в production після підтвердження"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    name: Розгортання в production
+    needs: [build, deploy-staging]
+    runs-on: [self-hosted, codelab]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    # Середовище production має правило «Required reviewers»: job чекає підтвердження.
+    environment:
+      name: production
+      url: http://localhost:8282
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Розгортання з перевіркою і відкатом
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: bash scripts/deploy.sh production "${{ needs.build.outputs.image }}" "${{ github.sha }}"
+      - name: Підсумок
+        run: |
+          {
+            echo "### Production оновлено"
+            echo "- образ: \`${{ needs.build.outputs.image }}\`"
+            echo "- версія: ${{ needs.build.outputs.version }}"
+            echo "- адреса: http://localhost:8282"
+          } >> "$GITHUB_STEP_SUMMARY"

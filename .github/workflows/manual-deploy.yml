@@ -1,0 +1,43 @@
+# Ручне розгортання вибраної версії: відкат до попереднього образу або повторне розгортання.
+name: Manual deploy / rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Середовище"
+        type: choice
+        options: [staging, production]
+        required: true
+      image:
+        description: "Образ, напр. ghcr.io/<власник>/<репозиторій>:sha-1234567 або :1.0.12"
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Розгортання ${{ inputs.environment }}
+    runs-on: [self-hosted, codelab]
+    timeout-minutes: 15
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment == 'production' && 'http://localhost:8282' || 'http://localhost:8281' }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Розгортання з перевіркою і відкатом
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          ENV_NAME: ${{ inputs.environment }}
+          IMAGE: ${{ inputs.image }}
+        run: bash scripts/deploy.sh "$ENV_NAME" "$IMAGE"

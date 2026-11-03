@@ -1,0 +1,38 @@
+# Опис середовища (тестового або робочого) для docker compose.
+# Значення підставляє scripts/deploy.sh: IMAGE, APP_ENV, HOST_PORT, DB_PASSWORD.
+services:
+  app:
+    image: ${IMAGE:?образ не задано}
+    environment:
+      APP_ENV: ${APP_ENV:?середовище не задано}
+      PORT: "3000"
+      DATABASE_URL: postgres://codelab:${DB_PASSWORD:?пароль бази не задано}@db:5432/codelab
+    ports:
+      - "${HOST_PORT:?порт не задано}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: codelab
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: codelab
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codelab -d codelab"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  db-data:

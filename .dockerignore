@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.git
+.github
+docs
+deploy
+scripts
+screenshots
+kursova
+*.md
