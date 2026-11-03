@@ -33,7 +33,7 @@ button.small { padding: 2px 8px; font-size: 13px; background: #e2e8f0; color: va
 <body>
 <div class="env"><b>${esc(envTitle[info.env] ?? info.env)}</b>
 <span>версія <code>${esc(info.version)}</code> · коміт <code>${esc(info.commit.slice(0, 7))}</code> · зібрано ${esc(info.builtAt)}</span></div>
-<header><h1>КодЛаб · Задачі проєктів</h1><span id="sum"></span></header>
+<header><h1>КодЛаб · Задачі клієнтських проєктів</h1><span id="sum"></span></header>
 <form id="f">
   <input name="project" placeholder="Код проєкту, напр. SHOP" maxlength="6" size="18">
   <input name="title" placeholder="Назва задачі" size="40">
