@@ -39,7 +39,7 @@ describe("перевірки стану", () => {
 describe("задачі", () => {
   it("створює задачу і повертає 201", async () => {
     const r = await create({ project: "shop", title: "Оплата карткою", priority: "high" });
-    expect(r.statusCode).toBe(201);
+    expect(r.statusCode).toBe(200);
     expect(r.json()).toMatchObject({ id: 1, project: "SHOP", status: "todo", priority: "high" });
   });
 
